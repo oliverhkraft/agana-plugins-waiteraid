@@ -1,0 +1,79 @@
+{
+  "manifest_version": "1",
+  "name": "waiteraid",
+  "display_name": "WaiterAid",
+  "description": "WaiterAid /wa-caller-api/ integration — guest/booking lookup and write-message-to-restaurant for the AI phone agent.",
+  "secrets": [
+    {
+      "name": "WAITERAID_CALLER_BEARER",
+      "description": "Bearer token for /wa-caller-api/ (provided by WaiterAid integrations team)"
+    },
+    {
+      "name": "WAITERAID_RESTID",
+      "description": "Numeric restaurant id (e.g. 1240). Per-company secret; per-restaurant manifests upload their own value."
+    }
+  ],
+  "context": ["caller_number"],
+  "tools": [
+    {
+      "identifier": "find_booking_by_phone",
+      "description": "Look up active future bookings for the caller's phone number on this restaurant.",
+      "input_schema": {
+        "type": "object",
+        "properties": { "phone": { "type": "string" } },
+        "required": ["phone"]
+      },
+      "transport": {
+        "kind": "http",
+        "method": "GET",
+        "url": "https://app.waiteraid.com/wa-caller-api/getBookings",
+        "headers": {
+          "Authorization": "Bearer {{ secret.WAITERAID_CALLER_BEARER }}",
+          "Accept": "application/json"
+        },
+        "query": {
+          "phone": "{{ input.phone | default(context.caller_number) }}",
+          "restid": "{{ secret.WAITERAID_RESTID }}"
+        },
+        "timeout_ms": 8000
+      },
+      "response": {
+        "success_when": "success == `1`",
+        "pick": "data",
+        "empty_is_success": true,
+        "on_error": "return_empty"
+      }
+    },
+    {
+      "identifier": "send_message_to_restaurant",
+      "description": "Post a free-text note to the restaurant about a known booking. Use when the caller wants to leave a message (allergies, late arrival, special request, table preference) and we have a bookingId from find_booking_by_phone.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "bookingId": { "type": "string" },
+          "message": { "type": "string", "maxLength": 1000 }
+        },
+        "required": ["bookingId", "message"]
+      },
+      "transport": {
+        "kind": "http",
+        "method": "POST",
+        "url": "https://app.waiteraid.com/wa-caller-api/writeMessageToRestaurant",
+        "headers": {
+          "Authorization": "Bearer {{ secret.WAITERAID_CALLER_BEARER }}",
+          "Accept": "application/json",
+          "Content-Type": "application/json"
+        },
+        "body": {
+          "bookingId": "{{ input.bookingId }}",
+          "message": "{{ input.message }}"
+        },
+        "timeout_ms": 8000
+      },
+      "response": {
+        "pick": "data",
+        "on_error": "fail"
+      }
+    }
+  ]
+}

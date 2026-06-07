@@ -1,0 +1,86 @@
+{
+  "cases": [
+    {
+      "name": "find_booking_by_phone › happy path",
+      "tool": "find_booking_by_phone",
+      "input": { "phone": "+46707766558" },
+      "context": { "caller_number": "+46707766558" },
+      "fixture": {
+        "request": {
+          "method": "GET",
+          "url_contains": "phone=%2B46707766558",
+          "headers": { "Authorization": "***" }
+        },
+        "response": {
+          "status": 200,
+          "body": {
+            "success": 1,
+            "data": [
+              {
+                "bookingId": "abc123",
+                "shortcodeurl": "https://app.waiteraid.com/edit/abc123",
+                "guests": 4,
+                "datetime": "2026-06-10 19:00"
+              }
+            ]
+          }
+        }
+      },
+      "expect": { "result": [{ "bookingId": "abc123", "shortcodeurl": "https://app.waiteraid.com/edit/abc123", "guests": 4, "datetime": "2026-06-10 19:00" }] }
+    },
+    {
+      "name": "find_booking_by_phone › no bookings returns empty",
+      "tool": "find_booking_by_phone",
+      "input": { "phone": "+46700000000" },
+      "context": { "caller_number": "+46700000000" },
+      "fixture": {
+        "request": { "method": "GET", "url_contains": "phone=%2B46700000000" },
+        "response": { "status": 200, "body": { "success": 1, "data": [] } }
+      },
+      "expect": { "result": [] }
+    },
+    {
+      "name": "find_booking_by_phone › vendor 500 returns empty (on_error)",
+      "tool": "find_booking_by_phone",
+      "input": { "phone": "+46707766558" },
+      "context": { "caller_number": "+46707766558" },
+      "fixture": {
+        "request": { "method": "GET", "url_contains": "phone=%2B46707766558" },
+        "response": { "status": 500, "body": { "error": "internal" } }
+      },
+      "expect": { "result": null }
+    },
+    {
+      "name": "find_booking_by_phone › falls back to caller_number when input phone missing",
+      "tool": "find_booking_by_phone",
+      "input": {},
+      "context": { "caller_number": "+46707766558" },
+      "fixture": {
+        "request": { "method": "GET", "url_contains": "phone=%2B46707766558" },
+        "response": { "status": 200, "body": { "success": 1, "data": [] } }
+      },
+      "expect": { "result": [] }
+    },
+    {
+      "name": "send_message_to_restaurant › happy path",
+      "tool": "send_message_to_restaurant",
+      "input": { "bookingId": "abc123", "message": "Vi har en glutenintolerans i sällskapet, tack." },
+      "context": { "caller_number": "+46707766558" },
+      "fixture": {
+        "request": {
+          "method": "POST",
+          "url_contains": "/wa-caller-api/writeMessageToRestaurant",
+          "headers": {
+            "Authorization": "***",
+            "Content-Type": "application/json"
+          }
+        },
+        "response": {
+          "status": 200,
+          "body": { "success": 1, "data": { "delivered": true, "noteId": "n-xyz" } }
+        }
+      },
+      "expect": { "result": { "delivered": true, "noteId": "n-xyz" } }
+    }
+  ]
+}

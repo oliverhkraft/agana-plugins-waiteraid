@@ -1,0 +1,19 @@
+name: validate
+# Manual-only until the `agana-plugin` runtime is published to PyPI.
+# Locally and on push to the monorepo this works via:
+#   pip install -e ../agana-plugin-runtime && agana-plugin validate && agana-plugin test
+# Once published, change the trigger back to `on: [push, pull_request]`.
+on:
+  workflow_dispatch:
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: pip install agana-plugin
+      - run: agana-plugin validate
+      - run: agana-plugin test
