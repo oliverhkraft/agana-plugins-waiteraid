@@ -2,26 +2,26 @@
   "manifest_version": "1",
   "name": "waiteraid",
   "display_name": "WaiterAid",
-  "description": "WaiterAid /wa-caller-api/ integration — guest/booking lookup and write-message-to-restaurant for the AI phone agent.",
+  "description": "WaiterAid integration — bordsbokning, gäst-lookup, meddelanden och restaurang-config-sync för Agana phone-agenten.",
   "secrets": [
     {
       "name": "WAITERAID_CALLER_BEARER",
-      "description": "Bearer token for /wa-caller-api/ (provided by WaiterAid integrations team)"
-    },
-    {
-      "name": "WAITERAID_RESTID",
-      "description": "Numeric restaurant id (e.g. 1240). Per-company secret; per-restaurant manifests upload their own value."
+      "description": "Bearer-token för /wa-caller-api/ och /api/ai-instructor/ (från WaiterAid integrations team)."
     }
   ],
-  "context": ["caller_number"],
+  "context": ["caller_number", "company.metadata.waiteraid_restid"],
   "tools": [
     {
       "identifier": "find_booking_by_phone",
-      "description": "Look up active future bookings for the caller's phone number on this restaurant.",
+      "description": "Slå upp aktiva bokningar för uppringaren. Returnerar endast boknings-ID, tid och antal — aldrig gästens namn, telefon eller e-post.",
       "input_schema": {
         "type": "object",
-        "properties": { "phone": { "type": "string" } },
-        "required": ["phone"]
+        "properties": {
+          "phone": {
+            "type": "string",
+            "description": "Telefonnummer att slå upp. Utelämnas normalt — faller då tillbaka till uppringarens nummer."
+          }
+        }
       },
       "transport": {
         "kind": "http",
@@ -33,27 +33,32 @@
         },
         "query": {
           "phone": "{{ input.phone | default(context.caller_number) }}",
-          "restid": "{{ secret.WAITERAID_RESTID }}"
+          "restid": "{{ context.company.metadata.waiteraid_restid }}"
         },
         "timeout_ms": 8000
       },
       "response": {
         "success_when": "success == `1`",
-        "pick": "data",
+        "pick": "data[*].{booking_id: bookingId, datetime: datetime, party_size: guests, shortcode_url: shortcodeurl}",
         "empty_is_success": true,
         "on_error": "return_empty"
+      },
+      "callbacks": {
+        "success": "Jag har hittat dina bokningar.",
+        "failure": "Jag kunde inte hämta dina bokningar just nu.",
+        "timeout": "Det tog för lång tid att hämta bokningarna."
       }
     },
     {
       "identifier": "send_message_to_restaurant",
-      "description": "Post a free-text note to the restaurant about a known booking. Use when the caller wants to leave a message (allergies, late arrival, special request, table preference) and we have a bookingId from find_booking_by_phone.",
+      "description": "Skicka ett meddelande till restaurangen om en befintlig bokning (allergier, sittplats, sena ändringar).",
       "input_schema": {
         "type": "object",
         "properties": {
-          "bookingId": { "type": "string" },
-          "message": { "type": "string", "maxLength": 1000 }
+          "booking_id": { "type": "string" },
+          "message": { "type": "string", "maxLength": 500 }
         },
-        "required": ["bookingId", "message"]
+        "required": ["booking_id", "message"]
       },
       "transport": {
         "kind": "http",
@@ -61,19 +66,140 @@
         "url": "https://app.waiteraid.com/wa-caller-api/writeMessageToRestaurant",
         "headers": {
           "Authorization": "Bearer {{ secret.WAITERAID_CALLER_BEARER }}",
-          "Accept": "application/json",
-          "Content-Type": "application/json"
+          "Content-Type": "application/json",
+          "Accept": "application/json"
         },
         "body": {
-          "bookingId": "{{ input.bookingId }}",
+          "bookingId": "{{ input.booking_id }}",
           "message": "{{ input.message }}"
         },
         "timeout_ms": 8000
       },
       "response": {
-        "pick": "data",
+        "success_when": "success == `true`",
         "on_error": "fail"
+      },
+      "callbacks": {
+        "success": "Tack, jag har skickat meddelandet till restaurangen.",
+        "failure": "Jag kunde inte skicka meddelandet just nu, vill du att jag försöker igen?",
+        "timeout": "Det tog för lång tid att skicka meddelandet. Jag försöker igen om en stund."
       }
+    },
+    {
+      "identifier": "cancel_booking",
+      "description": "Avboka en befintlig bokning baserat på booking_id.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "booking_id": { "type": "string" }
+        },
+        "required": ["booking_id"]
+      },
+      "bridge_handler": true,
+      "callbacks": {
+        "success": "Din bokning är avbokad.",
+        "failure": "Jag kunde inte avboka just nu, vill du försöka igen?",
+        "timeout": "Det tog för lång tid. Försök igen om en stund."
+      }
+    },
+    {
+      "identifier": "reserve_table",
+      "description": "Boka ett bord. Hanterar gäst-lookup, gäst-skapande och bokningsskapande. Telefonnumret tas automatiskt från uppringarens nummer — fråga inte kunden.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "firstname": { "type": "string" },
+          "lastname": { "type": "string" },
+          "party_size": { "type": "integer", "minimum": 1 },
+          "children_count": { "type": "integer", "minimum": 0 },
+          "date": { "type": "string", "description": "YYYY-MM-DD eller naturlig (t.ex. 'imorgon', 'fredag')" },
+          "time": { "type": "string", "description": "HH:MM" },
+          "seating_preference": { "type": "string" },
+          "occasion": { "type": "string" },
+          "accessibility_needs": { "type": "string" },
+          "dietary_notes": { "type": "string" },
+          "special_requests": { "type": "string" },
+          "company_name": { "type": "string" },
+          "company_org_number": { "type": "string" }
+        },
+        "required": ["firstname", "party_size", "date", "time"]
+      },
+      "bridge_handler": true,
+      "callbacks": {
+        "success": "Bordet är bokat.",
+        "failure": "Jag kunde inte boka bordet just nu, vill du att jag försöker igen?",
+        "timeout": "Det tog för lång tid att boka. Försök igen om en stund."
+      }
+    },
+    {
+      "identifier": "update_booking",
+      "description": "Uppdatera en befintlig bokning. Stöder ändring av tid, datum, party_size, allergier, anteckningar.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "booking_id": { "type": "string" },
+          "new_date": { "type": "string" },
+          "new_time": { "type": "string" },
+          "new_party_size": { "type": "integer", "minimum": 1 },
+          "new_children_count": { "type": "integer", "minimum": 0 },
+          "occasion": { "type": "string" },
+          "seating_preference": { "type": "string" },
+          "accessibility_needs": { "type": "string" },
+          "dietary_notes": { "type": "string" },
+          "special_requests": { "type": "string" }
+        },
+        "required": ["booking_id"]
+      },
+      "bridge_handler": true,
+      "callbacks": {
+        "success": "Jag har uppdaterat din bokning.",
+        "failure": "Jag kunde inte uppdatera just nu.",
+        "timeout": "Det tog för lång tid att uppdatera bokningen."
+      }
+    }
+  ],
+  "actions": [
+    {
+      "identifier": "refresh_restaurant_data",
+      "label": "Sync från WaiterAid",
+      "description": "Hämta öppettider, menyer och regler från WaiterAid. Skriver om RAG-dokument.",
+      "input_schema": { "type": "object", "properties": {} },
+      "transport": {
+        "kind": "http",
+        "method": "GET",
+        "url": "https://app.waiteraid.com/api/ai-instructor/getData",
+        "headers": {
+          "Authorization": "Bearer {{ secret.WAITERAID_CALLER_BEARER }}",
+          "Accept": "application/json"
+        },
+        "query": {
+          "restid": "{{ context.company.metadata.waiteraid_restid }}"
+        },
+        "timeout_ms": 30000
+      },
+      "response": { "pick": "items", "on_error": "fail" },
+      "effects": [
+        {
+          "kind": "write_rag_documents",
+          "source_type": "waiteraid_instructor",
+          "wipe_existing": true,
+          "items_at": ".",
+          "title_template": "{{ item.title.title_name }}",
+          "body_parts": [
+            { "template": "{{ item.title.description }}" },
+            {
+              "for_each_at": "item.meta",
+              "where_not_empty": "each.meta_value",
+              "template": "{{ each.meta_key }}: {{ each.meta_value }}"
+            }
+          ],
+          "metadata_template": {
+            "rest_id": "{{ context.company.metadata.waiteraid_restid }}",
+            "area_code": "{{ item.title.area_code }}",
+            "title_code": "{{ item.title.title_code }}"
+          }
+        }
+      ]
     }
   ]
 }
