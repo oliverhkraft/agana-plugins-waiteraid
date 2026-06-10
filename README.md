@@ -2,30 +2,42 @@
 
 An [Agana](https://github.com/oliverhkraft/agana-plugin-runtime) plugin that
 lets the AI phone agent talk to **WaiterAid / BokaBord** on behalf of a
-restaurant: identify the caller's existing bookings and leave notes for
-the staff. No bridge code changes per restaurant — install this plugin,
-upload two secrets, you're live.
+restaurant: book tables, look up and change the caller's bookings, cancel,
+leave notes for the staff, and sync restaurant data (hours, menus, rules)
+into the agent's knowledge base. No bridge code changes per restaurant —
+install this plugin, upload one secret, set the restid, you're live.
 
 ## Tools
 
-| Identifier | What it does | When the agent uses it |
+| Identifier | What it does | How it runs |
 |---|---|---|
-| `find_booking_by_phone` | Looks up active future bookings for the caller's phone at this restaurant. | When the caller says they've already booked and wants to change, confirm, or ask about it. |
-| `send_message_to_restaurant` | Posts a free-text note attached to an existing booking. | When the caller wants the restaurant to know something — allergies, late arrival, special request. |
+| `find_booking_by_phone` | Looks up active bookings for the caller's phone at this restaurant. Returns only booking id, datetime, party size, and edit link — guest name, phone, and email are stripped before the agent sees them. | HTTP — `GET /wa-caller-api/getBookings` |
+| `send_message_to_restaurant` | Posts a free-text note (max 500 chars) attached to an existing booking — allergies, late arrival, special requests. | HTTP — `POST /wa-caller-api/writeMessageToRestaurant` |
+| `reserve_table` | Books a table: guest lookup, guest creation, and booking creation. Phone number is taken from the caller automatically — the agent never asks for it. Supports children count, seating preference, occasion, accessibility needs, dietary notes, and company bookings. | Bridge handler |
+| `update_booking` | Changes an existing booking: date, time, party size, allergies, notes. | Bridge handler |
+| `cancel_booking` | Cancels a booking by `booking_id`. | Bridge handler |
 
-Both tools call WaiterAid's `/wa-caller-api/` endpoints with `Bearer`
-auth. Responses come back to the agent as structured data so it can
-answer naturally in the conversation.
+HTTP tools call WaiterAid's `/wa-caller-api/` endpoints directly with
+`Bearer` auth and JMESPath-extracted responses. Bridge-handler tools
+(`bridge_handler: true`) are dispatched to the Agana bridge, which
+orchestrates the multi-step WaiterAid `/wa-api/` flows.
+
+`find_booking_by_phone` falls back to the caller's number when no phone
+is given, treats an empty booking list as success, and returns empty on
+vendor errors so the conversation degrades gracefully.
+
+## Actions
+
+| Identifier | What it does |
+|---|---|
+| `refresh_restaurant_data` | Fetches opening hours, menus, and rules from WaiterAid's `/api/ai-instructor/getData` and rewrites the company's RAG documents (wipes previous `waiteraid_instructor` docs first). Run it after the restaurant changes hours or menus. |
 
 ## Per-restaurant configuration
 
-Each restaurant needs two secrets uploaded to its company in the Agana
-brain — see "Install into a company" below.
-
-| Secret name | Source |
-|---|---|
-| `WAITERAID_CALLER_BEARER` | The token your WaiterAid contact (BokaBord) issues for the `wa-caller-api` surface. |
-| `WAITERAID_RESTID` | The restaurant's numeric WaiterAid id (e.g. `1240`). |
+| What | Where | Source |
+|---|---|---|
+| `WAITERAID_CALLER_BEARER` | Encrypted secret on the company | The token your WaiterAid contact (BokaBord) issues for the `wa-caller-api` and `ai-instructor` surfaces. |
+| `waiteraid_restid` | `company.metadata` in the Agana brain | The restaurant's numeric WaiterAid id (e.g. `1240`). |
 
 ## Quickstart (vibe-code locally)
 
@@ -40,7 +52,7 @@ cd agana-plugins-waiteraid
 # Validate the manifest shape
 agana-plugin validate
 
-# Run the offline golden tests (5 cases — should all pass)
+# Run the offline golden tests (7 cases — should all pass)
 agana-plugin test
 
 # Try it against the real WaiterAid API
@@ -50,7 +62,12 @@ agana-plugin dry-run find_booking_by_phone --input '{"phone":"+46707766558"}'
 ```
 
 `agana-plugin dry-run` prints the rendered HTTP request and the
-JMESPath-extracted result — that's what the agent will see.
+JMESPath-extracted result — that's what the agent will see. Bridge-handler
+tools (`reserve_table`, `update_booking`, `cancel_booking`) can't be
+dry-run locally; they need a running bridge.
+
+CI (`.github/workflows/validate.yml`) runs `validate` + `test` on every
+push and pull request.
 
 ## Install into a restaurant (production)
 
@@ -73,24 +90,21 @@ curl -X POST "$AGANA_BRAIN_BASE_URL/v1/secrets/upsert" \
   -H "Content-Type: application/json" \
   -d '{"company_id":"'"$COMPANY_ID"'","name":"WAITERAID_CALLER_BEARER","value":"..."}'
 
-# 3. Upload the restid
-curl -X POST "$AGANA_BRAIN_BASE_URL/v1/secrets/upsert" \
-  -H "x-api-key: $AGANA_BRAIN_API_KEY" \
-  -H "Content-Type: application/json" \
-  -d '{"company_id":"'"$COMPANY_ID"'","name":"WAITERAID_RESTID","value":"339"}'
+# 3. Set the restaurant's WaiterAid id on the company metadata
+#    (key: waiteraid_restid — the plugin reads it via
+#    context.company.metadata.waiteraid_restid)
 ```
 
-That's it. Next inbound call to that restaurant's number dispatches
-through this plugin.
+Then run the `refresh_restaurant_data` action once so the agent knows the
+restaurant's hours, menus, and rules. Next inbound call to that
+restaurant's number dispatches through this plugin.
 
-## Scope
+## Privacy
 
-This plugin currently wires the two `/wa-caller-api/` (JSON-bodied) tools.
-WaiterAid also has form-encoded `/wa-api/` endpoints for creating, editing,
-and cancelling bookings (`addBooking`, `editBooking`, `setBookingStatus`).
-They'll be added here as soon as the Agana runtime supports
-`body_encoding: form` — at which point the agent will be able to take new
-reservations, change existing ones, and cancel without operator help.
+`find_booking_by_phone` never exposes guest PII to the agent: the response
+extraction picks only `booking_id`, `datetime`, `party_size`, and
+`shortcode_url`, dropping name, phone, and email returned by WaiterAid.
+This is covered by a dedicated golden test.
 
 ## License
 
